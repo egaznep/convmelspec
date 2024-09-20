@@ -503,7 +503,7 @@ class ConvertibleSpectrogram(nn.Module):
         """
 
         x = x.unsqueeze(1)  # Add channel: (batch x channel x samples)
-        power = not math.isclose(self.power, 1.0)
+        power = self.power
         if self.spec_mode == "torchaudio":
             out = self.spec_transf(x.squeeze(1))
             if not power:
