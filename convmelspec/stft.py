@@ -510,7 +510,7 @@ class ConvertibleSpectrogram(nn.Module):
                 out = torch.abs(out)
 
         elif self.spec_mode == "DFT":
-            with torch.cuda.amp.autocast(enabled=False):
+            with torch.amp.autocast('cuda', enabled=False):
                 if self.dft_mode == "store":
                     out = self.stft.forward_precomputed(
                         x, hop_size=self.hop_size, power=power
