@@ -164,12 +164,19 @@ class _STFT_Internal(nn.Module):
         else:
             return None, None
 
-    def complex_to_abs(self, real_x, imag_x, power=False):
-        """Convert the real and imaginary parts to magnitude or power
-        spectrum."""
-        S = real_x**2 + imag_x**2
-        if not power:
-            S = torch.sqrt(S)
+    def realimag_to_repr(
+            self,
+            real_x,
+            imag_x,
+            power: float | None = 2
+    ):
+        """Convert the real and imaginary parts to magnitude 
+        or power spectrum if power specified."""
+        if power:
+            S = real_x**2 + imag_x**2
+            S = torch.pow(S, power/2)
+        else:
+            S = torch.complex(real_x, imag_x)
         return S
 
     def forward_input(
@@ -178,21 +185,24 @@ class _STFT_Internal(nn.Module):
         DFTr: torch.Tensor,
         DFTi: torch.Tensor,
         hop_size: int = 512,
-        power: bool = True,
+        power: float | None = 2,
     ):
         # 1D Convolution separately for real and imaginary parts of DFT matrix
         real_x = F.conv1d(x, DFTr, stride=hop_size, padding=self.padding)
         imag_x = F.conv1d(x, DFTi, stride=hop_size, padding=self.padding)
-        return self.complex_to_abs(real_x, imag_x, power=power)
+        return self.realimag_to_repr(real_x, imag_x, power=power)
 
     def forward_precomputed(
-        self, x: torch.Tensor, hop_size: int = 512, power: bool = True
+        self,
+        x: torch.Tensor,
+        hop_size: int = 512,
+        power: float | None = 2,
     ):
 
         # 1D Convolution separately for real and imaginary parts of DFT matrix
         real_x = F.conv1d(x, self.DFTr, stride=hop_size, padding=self.padding)
         imag_x = F.conv1d(x, self.DFTi, stride=hop_size, padding=self.padding)
-        return self.complex_to_abs(real_x, imag_x, power=power)
+        return self.realimag_to_repr(real_x, imag_x, power=power)
 
     def forward_on_the_fly(
         self,
@@ -200,7 +210,7 @@ class _STFT_Internal(nn.Module):
         n: torch.Tensor,
         w: torch.Tensor,
         hop_size: int = 512,
-        power: bool = True,
+        power: float | None = 2,
         window: torch.Tensor = None,
     ):
         DFTr, DFTi = self._create_DFT_matrix(n, w, window=window)
@@ -212,7 +222,7 @@ class _STFT_Internal(nn.Module):
         n: torch.Tensor,
         w: torch.Tensor,
         hop_size: int = 512,
-        power: bool = True,
+        power: float | None = 2,
         window: Optional[torch.Tensor] = None,
     ):
         """Inference of internal STFT module
@@ -223,7 +233,8 @@ class _STFT_Internal(nn.Module):
             w (_type_): DFT omega sequence
             n_fft (int, optional): FFT size. Defaults to 1024.
             hop_size (int, optional): Hop size. Defaults to 512.
-            power (bool, optional): _description_. Defaults to True.
+            power (float, optional): If a floating point number, computes the
+                power accordingly. If None, returns a complex-valued STFT.
             window (_type_, optional): torch tensor of window. Defaults to None.
 
         Returns:
@@ -268,7 +279,7 @@ class ConvertibleSpectrogram(nn.Module):
         self,
         sr: float = 16000,
         n_fft: int = 1024,
-        window: Union[str, np.ndarray] = "hann",
+        window_fn: Optional[Callable] = torch.hann_window,
         hop_size: int = 512,
         n_mel: Optional[int] = None,
         spec_mode: str = "torchaudio",
@@ -289,7 +300,7 @@ class ConvertibleSpectrogram(nn.Module):
         Args:
             sr (float, optional): Sampling rate. Defaults to 16000.
             n_fft (int, optional): FFT size. Defaults to 1024.
-            window (str, optional): Window torch vector or string. Defaults to 'hann'.
+            window_fn (Callable, optional): A function for window. Defaults to Hann window.
             hop_size (int, optional): STFT hop. Defaults to 512.
             n_mel (int, optional): number of mel bins. Defaults to None.
             spec_mode (str, optional): 'torchaudio' or 'DFT'. Defaults to 'torchaudio'.
@@ -299,7 +310,8 @@ class ConvertibleSpectrogram(nn.Module):
             mel_scale (str, optional): 'slaney' or 'htk' api follows each separately. Defaults to 'slaney'.
             norm (_type_, optional): See librosa or torchaudio. Defaults to None.
             eps (float, optional): dB floor. Defaults to 1e-8.
-            power (float, optional): Power of spectrogram. Defaults to 2.0.
+            power (float, optional): If a floating point number, computes the
+                power accordingly. If None, returns a complex-valued STFT. Defaults to 2.0.
             dft_mode (str, optional): 'on_the_fly', 'store', 'input'. Defaults to 'store'.
                 on_the_fly = Dynamically creates DFT matrix during inference
                     model_size = pretty small
@@ -332,7 +344,7 @@ class ConvertibleSpectrogram(nn.Module):
         self.dft_mode = dft_mode
         self.eps = eps
         self.padding = padding
-        self.window_fn = self._create_window_fn(window)
+        self.window_fn = window_fn
         self.spec_transf = None
         self.stft = None
         self.power = power
@@ -373,38 +385,6 @@ class ConvertibleSpectrogram(nn.Module):
         elif "cuda" in args:
             self.device = "cuda"
         return self
-
-    def _create_window_fn(self, window: Union[str, np.ndarray]) -> Callable:
-        """Creates a window function based on the input window.
-
-        Args:
-            window (str or np.ndarray): Window type or actual window in an
-                ndarray.
-
-        Returns:
-            Callable: Function to create the torch window.
-        """
-        if type(window).__module__ == np.__name__:
-
-            def window_fn(win_len):
-                return torch.from_numpy(window.astype(np.float32)).to(
-                    self.device
-                )
-
-        elif window == "hann":
-
-            def window_fn(win_len):
-                window = sig.windows.hann(win_len, sym=True)
-                return torch.from_numpy(window.astype(np.float32)).to(
-                    self.device
-                )
-
-        else:
-            raise RuntimeError(
-                f"Unsuported window parameter {window}. "
-                "Valid options are 'hann' or an ndarray"
-            )
-        return window_fn
 
     def set_mode(self, spec_mode: str, dft_mode: str="on_the_fly", coreml: bool = False):
         """Set the DFT mode. See docs above.
